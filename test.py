@@ -85,17 +85,22 @@ def make_chatgpt_call(translation: str):
     )
     return response.choices[0].message.content
 
-def interact_with_chatgpt(translations: dict):
+def interact_with_chatgpt(translations: dict, num_iterations: int = 5): #### Change this value for repetition per query
     responses_dict = {}
 
     for english_prompt, chinese_variants in translations.items():
         response_variants = {}
 
         for variant, translation in chinese_variants.items():
-            print(f"Making ChatGPT call for {variant}:\t{translation}")
-            # Call chatgpt
-            completion = make_chatgpt_call(translation)
-            response_variants[f'response_{variant}'] = completion
+            print(f"Making ChatGPT calls for {variant}:\t{translation}")
+
+            # Make multiple calls to ChatGPT for each variant
+            response_list = []
+            for _ in range(num_iterations):
+                completion = make_chatgpt_call(translation)
+                response_list.append(completion)
+
+            response_variants[f'response_{variant}'] = response_list
 
         responses_dict[english_prompt] = response_variants
 
@@ -158,7 +163,6 @@ def main():
     write_json(translated_responses)
 
     # write_csv(translated_responses)
-
 
 if __name__ == "__main__":
     main()
