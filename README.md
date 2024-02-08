@@ -10,6 +10,7 @@ api_key_path = "translate-key.json"
 translate_client = Translate.Client.from_service_account_json(api_key_path)
 
 The program takes input as "input.csv" and translates the text to Chinese via the Google Translate API. It can then make either a .json or .csv output file with the responses.
+It does so using three Chinese variants: Chinese Traditional, Chinese Simplified, and Taiwanese Mandarin.
 
 # Packages needed
 openai,
