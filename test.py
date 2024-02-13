@@ -7,6 +7,9 @@ import re
 import time
 from google.cloud import translate_v2 as Translate
 
+# number of times to repeat each query
+QUERY_REPETITIONS = 2
+
 # OpenAI API key
 openai.api_key = open("openai-key.txt", "r").read().strip("\n")
 
@@ -29,7 +32,7 @@ def translate(target: str, text: str) -> dict:
 # Using the three supported variants with Google Cloud Translate
 def translate_to_chinese_variants(text):
     chinese_variants = {
-        'zh': translate('zh', text),            #Chinese simplfied
+        'zh':    translate('zh', text),         #Chinese simplfied
         'zh-CN': translate('zh-CN', text),      #Chinese simplified, People's Republic of China
         'zh-TW': translate('zh-TW', text)       #Taiwanese Mandarin
     }
@@ -41,14 +44,14 @@ def translate_responses_to_english(translations_with_responses):
     for english_prompt, response_variants in translations_with_responses.items():
         translated_variants = {}
 
-        for variant, response in response_variants.items():
-            # Decode HTML
-            decoded_response = html.unescape(response)
+        for variant, response_dict in response_variants.items():
+            translated_responses_dict = {}
 
-            # Replace HTML entity &#39; with apostrophe '
-            decoded_response = re.sub(r'&#39;', "'", decoded_response)
-            translated_response = translate('en', decoded_response)
-            translated_variants[f'{variant}_translated'] = translated_response
+            for index, response in response_dict.items():
+                translated_response = translate('en', response)
+                translated_responses_dict[index] = translated_response
+
+            translated_variants[variant] = translated_responses_dict
 
         translated_responses[english_prompt] = translated_variants
 
@@ -69,7 +72,6 @@ def process_csv(input_file):
         reader = csv.DictReader(csv_input)
 
         for row in reader:
-            # time.sleep(1)
             # csv column starts with 'text'
             english_prompt = row.get('text', '')
 
@@ -85,22 +87,21 @@ def make_chatgpt_call(translation: str):
     )
     return response.choices[0].message.content
 
-def interact_with_chatgpt(translations: dict, num_iterations: int = 5): #### Change this value for repetition per query
+def interact_with_chatgpt(translations: dict, num_iterations: int = QUERY_REPETITIONS):
     responses_dict = {}
 
     for english_prompt, chinese_variants in translations.items():
         response_variants = {}
 
         for variant, translation in chinese_variants.items():
-            print(f"Making ChatGPT calls for {variant}:\t{translation}")
-
+            print(f"Making {num_iterations} ChatGPT calls for {variant}:\t{translation}")
             # Make multiple calls to ChatGPT for each variant
-            response_list = []
-            for _ in range(num_iterations):
+            response_dict = {}
+            for index in range(num_iterations):
                 completion = make_chatgpt_call(translation)
-                response_list.append(completion)
+                response_dict[index+1] = completion
 
-            response_variants[f'response_{variant}'] = response_list
+            response_variants[variant] = response_dict
 
         responses_dict[english_prompt] = response_variants
 
@@ -118,20 +119,25 @@ def print_responses(translations_with_responses: dict):
     print("\nRESPONSES:")
     for english_prompt, response_variants in translations_with_responses.items():
         print(f"English: {english_prompt}")
-        for variant, response in response_variants.items():
-            print(f"{variant}: {response}\n")
+        for variant, response_dict in response_variants.items():
+            print(f"{variant}:")
+            for index, response in response_dict.items():
+                print(f"  {index}: {response}")
+
+            print()  # Add a newline between variants
         print("-" * 50)
 
 def print_translated_responses(translated_responses: dict):
     print("\nTRANSLATED RESPONSES")
     for english_prompt, translated_variants in translated_responses.items():
         print(f"English: {english_prompt}")
-        for variant, translation in translated_variants.items():
-            # Convert to string
-            translation_str = str(translation)
-            # Replace HTML &#39; with apostrophe '
-            decoded_translation = re.sub(r'&#39;', "'", translation_str)
-            print(f"{variant}:\t{decoded_translation}\n")
+        for variant, translation_dict in translated_variants.items():
+            print(f"{variant}:")
+            for index, translation in translation_dict.items():
+                translation_str = str(translation)
+                print(f"  {index}:\t{translation_str}")
+
+            print()  # Add a newline between variants
         print("-" * 50)
 
 # can use this if you want to make a csv instead of json
@@ -150,6 +156,16 @@ def write_json(translated_responses: dict):
     with open('translated_responses.json', 'w', encoding='utf-8') as json_file:
         json.dump(translated_responses, json_file, ensure_ascii=False, indent=4)
 
+def clean_up_json(json_data):
+    cleaned_json = json_data.copy()
+
+    for english_prompt, translations in json_data.items():
+        for variant, responses in translations.items():
+            for index, response in responses.items():
+                cleaned_json[english_prompt][variant][index] = response.replace('&#39;', "'")
+
+    return cleaned_json
+
 def main():
     translations = process_csv('input.csv')
     print_translations(translations)
@@ -158,11 +174,12 @@ def main():
     print_responses(translations_with_responses)
 
     translated_responses = translate_responses_to_english(translations_with_responses)
-    print_translated_responses(translated_responses)
+    cleaned_translated_responses = clean_up_json(translated_responses)
+    print_translated_responses(cleaned_translated_responses)
 
-    write_json(translated_responses)
+    write_json(cleaned_translated_responses)
 
-    # write_csv(translated_responses)
+    # write_csv(translated_responses)   # writes to csv
 
 if __name__ == "__main__":
     main()
