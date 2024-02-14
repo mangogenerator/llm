@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 import openai
-import html
 import json
 import csv
-import re
-import time
-from google.cloud import translate_v2 as Translate
+import asyncio
+import aiohttp
+from   google.cloud import translate_v2 as Translate
 
 # number of times to repeat each query
-QUERY_REPETITIONS = 2
+QUERY_REPETITIONS = 10
 
 # OpenAI API key
-openai.api_key = open("openai-key.txt", "r").read().strip("\n")
+openai.api_key = open("credentials/openai-key.txt", "r").read().strip("\n")
 
 # Google Cloud API key
-api_key_path = "translate-key.json"
+api_key_path = "credentials/translate-key.json"
 translate_client = Translate.Client.from_service_account_json(api_key_path)
 
 # Translates text into the target language, must be valid ISO 639-1 language code
@@ -23,13 +22,9 @@ def translate(target: str, text: str) -> dict:
         text = text.decode("utf-8")
 
     result = translate_client.translate(text, target_language=target)
-    # Testing
-    # print("Text: {}".format(result["input"]))
-    # print("Translation: {}".format(result["translatedText"]))
-    # print("Detected source language: {}".format(result["detectedSourceLanguage"]))
     return result["translatedText"]
 
-# Using the three supported variants with Google Cloud Translate
+# Using 3 variants
 def translate_to_chinese_variants(text):
     chinese_variants = {
         'zh':    translate('zh', text),         #Chinese simplfied
@@ -38,32 +33,13 @@ def translate_to_chinese_variants(text):
     }
     return chinese_variants
 
-def translate_responses_to_english(translations_with_responses):
-    translated_responses = {}
+async def translate_to_english_async(response):
+    if isinstance(response, bytes):
+        response = response.decode("utf-8")
 
-    for english_prompt, response_variants in translations_with_responses.items():
-        translated_variants = {}
+    result = translate_client.translate(response, target_language='en')
 
-        for variant, response_dict in response_variants.items():
-            translated_responses_dict = {}
-
-            for index, response in response_dict.items():
-                translated_response = translate('en', response)
-                translated_responses_dict[index] = translated_response
-
-            translated_variants[variant] = translated_responses_dict
-
-        translated_responses[english_prompt] = translated_variants
-
-    return translated_responses
-
-# def list_languages() -> dict:
-#     """Lists all available languages."""
-#     results = translate_client.get_languages()
-#     for language in results:
-#         print("{name} ({language})".format(**language))
-#     return results
-# list_languages()
+    return result["translatedText"]
 
 def process_csv(input_file):
     translations_dict = {}
@@ -80,14 +56,20 @@ def process_csv(input_file):
 
     return translations_dict
 
-def make_chatgpt_call(translation: str):
-    response = openai.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": f"{translation}"}]
-    )
-    return response.choices[0].message.content
+async def chatgpt_async_call(translation: str):
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {openai.api_key}"},
+            json={
+                "model": "gpt-3.5-turbo",
+                "messages": [{"role": "user", "content": f"{translation}"}],
+            },
+        ) as response:
+            data = await response.json()
+            return data["choices"][0]["message"]["content"]
 
-def interact_with_chatgpt(translations: dict, num_iterations: int = QUERY_REPETITIONS):
+async def chatgpt_processing(translations: dict, num_iterations: int = QUERY_REPETITIONS):
     responses_dict = {}
 
     for english_prompt, chinese_variants in translations.items():
@@ -95,17 +77,35 @@ def interact_with_chatgpt(translations: dict, num_iterations: int = QUERY_REPETI
 
         for variant, translation in chinese_variants.items():
             print(f"Making {num_iterations} ChatGPT calls for {variant}:\t{translation}")
-            # Make multiple calls to ChatGPT for each variant
-            response_dict = {}
-            for index in range(num_iterations):
-                completion = make_chatgpt_call(translation)
-                response_dict[index+1] = completion
-
+            # ASYNCHRONOUS CALLS TO CHATGPT FOR EACH VARIANT
+            tasks = [chatgpt_async_call(translation) for _ in range(num_iterations)]
+            responses = await asyncio.gather(*tasks)
+            response_dict = {index + 1: response for index, response in enumerate(responses)}
             response_variants[variant] = response_dict
 
         responses_dict[english_prompt] = response_variants
 
     return responses_dict
+
+async def translate_responses_to_english_async(translations_with_responses):
+    translated_responses = {}
+
+    for english_prompt, response_variants in translations_with_responses.items():
+        translated_variants = {}
+
+        for variant, response_dict in response_variants.items():
+            translated_responses_dict = {}
+            tasks = [translate_to_english_async(response) for response in response_dict.values()]
+            translated_responses_list = await asyncio.gather(*tasks)
+
+            for index, translation in enumerate(translated_responses_list):
+                translated_responses_dict[index + 1] = translation
+
+            translated_variants[variant] = translated_responses_dict
+
+        translated_responses[english_prompt] = translated_variants
+
+    return translated_responses
 
 def print_translations(translations: dict):
     print("\nTRANSLATIONS")
@@ -113,7 +113,7 @@ def print_translations(translations: dict):
         print(f"English: {english_prompt}")
         for variant, translation in chinese_variants.items():
             print(f"{variant}:\t{translation}")
-        print("-" * 50)
+        print("=" * 50)
 
 def print_responses(translations_with_responses: dict):
     print("\nRESPONSES:")
@@ -123,9 +123,8 @@ def print_responses(translations_with_responses: dict):
             print(f"{variant}:")
             for index, response in response_dict.items():
                 print(f"  {index}: {response}")
-
-            print()  # Add a newline between variants
-        print("-" * 50)
+            print()  # Add newline between variants
+        print("=" * 50)
 
 def print_translated_responses(translated_responses: dict):
     print("\nTRANSLATED RESPONSES")
@@ -136,16 +135,14 @@ def print_translated_responses(translated_responses: dict):
             for index, translation in translation_dict.items():
                 translation_str = str(translation)
                 print(f"  {index}:\t{translation_str}")
-
             print()  # Add a newline between variants
-        print("-" * 50)
+        print("=" * 50)
 
 # can use this if you want to make a csv instead of json
 def write_csv(translated_responses: dict):
     with open('translated_responses.csv', 'w', newline='', encoding='utf-8') as csv_file:
         csv_writer = csv.writer(csv_file)
         csv_writer.writerow(['Question in English', 'zh_response in English', 'zh_CN response in English', 'zh_TW response in English'])
-
         for english_prompt, translated_variants in translated_responses.items():
             row = [english_prompt]
             for variant, translation in translated_variants.items():
@@ -162,18 +159,30 @@ def clean_up_json(json_data):
     for english_prompt, translations in json_data.items():
         for variant, responses in translations.items():
             for index, response in responses.items():
-                cleaned_json[english_prompt][variant][index] = response.replace('&#39;', "'")
+                # fix encoding issue
+                cleaned_response = response.replace('&#39;', "'")
+                cleaned_response = cleaned_response.replace('&quot;', '"')
+                cleaned_json[english_prompt][variant][index] = cleaned_response
 
     return cleaned_json
 
-def main():
+# function to print all currently supported language codes
+def list_languages() -> dict:
+    """Lists all available languages."""
+    results = translate_client.get_languages()
+    for language in results:
+        print("{name} ({language})".format(**language))
+    return results
+
+async def main_async():
+
     translations = process_csv('input.csv')
     print_translations(translations)
 
-    translations_with_responses = interact_with_chatgpt(translations)
+    translations_with_responses = await chatgpt_processing(translations)
     print_responses(translations_with_responses)
 
-    translated_responses = translate_responses_to_english(translations_with_responses)
+    translated_responses = await translate_responses_to_english_async(translations_with_responses)
     cleaned_translated_responses = clean_up_json(translated_responses)
     print_translated_responses(cleaned_translated_responses)
 
@@ -182,4 +191,4 @@ def main():
     # write_csv(translated_responses)   # writes to csv
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main_async())
